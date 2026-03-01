@@ -25,6 +25,7 @@
         #startBtn:active { background: #66BB6A; }
         #startBtn:disabled { background: #555; color: #aaa; cursor: not-allowed; }
         #backBtn { background: #03DAC6; color: #000; margin-top: 30px; }
+        #errorLog { color: #ff4d4d; font-size: 0.8rem; margin-top: 10px; word-break: break-all; }
     </style>
 </head>
 <body>
@@ -34,6 +35,7 @@
     <div id="startScreen">
         <p style="color: #aaa; font-size: 0.9rem; margin-bottom: 20px;">QRツインを読み取ります。（暗号化完全対応）</p>
         <button id="startBtn" disabled>🚀 読取エンジンを構築中...</button>
+        <div id="errorLog"></div>
     </div>
 
     <div class="camera-container" id="cameraContainer">
@@ -110,7 +112,7 @@
                 }
                 bitOffset += len * 8;
                 const remaining = (rawBytes.length * 8) - bitOffset;
-                readBits(Math.min(4, remaining)); // 終端子
+                readBits(Math.min(4, remaining)); // 終端子をスキップ
                 if ((rawBytes.length * 8) - bitOffset >= 16) {
                     return readBits(16);
                 }
@@ -119,46 +121,64 @@
         },
         isAppEncrypted: function(mgmtBits) {
             if (mgmtBits === null) return false;
+            // 管理部の左から8番目(あるいは必要なビット)の判定。必要に応じてシフト数を調整してください。
             return ((mgmtBits >> 8) & 1) === 1; 
         }
     };
 
     // ==========================================
-    // 2. エンジンの自動ダウンロード＆メモリ上での魔改造パッチ
+    // 2. エンジンの自動ダウンロード＆超強力魔改造パッチ
     // ==========================================
     window.addEventListener('DOMContentLoaded', async () => {
         const btn = document.getElementById('startBtn');
+        const errorLog = document.getElementById('errorLog');
         try {
             const res = await fetch("https://unpkg.com/@zxing/library@0.21.0/umd/index.js");
-            if (!res.ok) throw new Error("ネットワークエラー");
+            if (!res.ok) throw new Error("ネットワークエラー: " + res.status);
             let source = await res.text();
 
-            const patchRegex = /(BitMatrixParser\.prototype\.readCodewords\s*=\s*function\s*\([\s\S]*?\{[\s\S]*?)(return\s+result\s*;)/;
-            if (!patchRegex.test(source)) throw new Error("パッチ適用箇所が見つかりません");
+            // 改行や変数名、圧縮の有無に影響されない超強力な正規表現
+            // 仕組み: クラス名.prototype.readCodewords = function() { ... return [変数名]; } を探し出し、returnの直前にXOR処理を注入する
+            const patchRegex = /([a-zA-Z0-9_$]+)\.prototype\.readCodewords\s*=\s*function\s*\([^)]*\)\s*\{([\s\S]*?)return\s+([a-zA-Z0-9_$]+);?\s*\}/g;
+            let isPatched = false;
 
-            source = source.replace(patchRegex, `$1
-                if (typeof window !== "undefined" && window.__applyTwinXor && window.twinDecryptMask) {
-                    for (var i = 0; i < result.length; i++) {
-                        result[i] ^= window.twinDecryptMask[i % window.twinDecryptMask.length];
-                    }
-                }
-            $2`);
+            source = source.replace(patchRegex, function(match, className, body, returnVar) {
+                isPatched = true;
+                return className + ".prototype.readCodewords = function() {" + body + 
+                    "if (typeof window !== 'undefined' && window.__applyTwinXor && window.twinDecryptMask) {" +
+                    "  for (var _i = 0; _i < " + returnVar + ".length; _i++) {" +
+                    "    " + returnVar + "[_i] ^= window.twinDecryptMask[_i % window.twinDecryptMask.length];" +
+                    "  }" +
+                    "}" +
+                    "return " + returnVar + "; }";
+            });
 
+            if (!isPatched) throw new Error("パッチ適用箇所が見つかりません。ライブラリの構造が想定と異なります。");
+
+            // 改造済みコードをブラウザのメモリ上に展開
             const script = document.createElement('script');
             script.textContent = source;
             document.head.appendChild(script);
 
-            btn.innerText = "📷 カメラを起動する";
-            btn.disabled = false;
-            btn.onclick = startApp;
+            // ロードが完了したらボタンを有効化
+            setTimeout(() => {
+                if (typeof ZXing !== 'undefined') {
+                    btn.innerText = "📷 カメラを起動する";
+                    btn.disabled = false;
+                    btn.onclick = startApp;
+                } else {
+                    throw new Error("ZXingの初期化に失敗しました。");
+                }
+            }, 500);
+
         } catch(e) {
             btn.innerText = "⚠️ 読込エラー（画面を再読込してください）";
-            alert("エンジンの構築に失敗しました。\n詳細: " + e.message);
+            errorLog.innerText = "詳細: " + e.message;
         }
     });
 
     // ==========================================
-    // 3. メインアプリケーションのロジック
+    // 3. メインアプリケーションのロジック（マスキング方式）
     // ==========================================
     const video = document.getElementById('video');
     const overlayCanvas = document.getElementById('overlayCanvas');
@@ -173,7 +193,7 @@
     async function startApp() {
         document.getElementById('startBtn').disabled = true;
         
-        // シングルリーダーを初期化（複数リーダーはJS版に存在しないため）
+        // シングルリーダーを初期化
         if (ZXing.BrowserQRCodeReader) {
             zxingReader = new ZXing.BrowserQRCodeReader();
         } else {
@@ -199,7 +219,7 @@
         }
     }
 
-    // 視覚的マスキング関数（見つけたQRを黒塗りで隠す）
+    // 第1QRを黒塗りで隠して、第2QRを読ませるためのマスキング関数
     function maskOutBoundingBox(context, points) {
         if (!points || points.length === 0) return;
         let minX = Infinity, minY = Infinity, maxX = 0, maxY = 0;
@@ -213,8 +233,7 @@
         });
         const w = maxX - minX;
         const h = maxY - minY;
-        // マージンを20%取って確実に黒塗りする
-        const padX = w * 0.2;
+        const padX = w * 0.2; // 少し広めに黒塗りする
         const padY = h * 0.2;
         context.fillStyle = '#000000';
         context.fillRect(minX - padX, minY - padY, w + padX * 2, h + padY * 2);
@@ -228,6 +247,7 @@
         }
         ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
 
+        // 画面上のガイド枠描画
         if (firstQR) drawBoundingBox(firstQR.points, '#00E676');
         if (secondQR) drawBoundingBox(secondQR.points, secondQR.isEncrypted ? '#ff4d4d' : '#29B6F6');
 
@@ -246,12 +266,13 @@
             
             if (normalRes) await processNormalResult(normalRes);
 
-            // STEP B: マスクが準備完了していれば、XOR復号モードで再スキャン
+            // STEP B: パスワード入力後、マスクが準備完了していればXOR復号モードで再スキャン
             if (window.twinDecryptMask) {
                 if (normalRes) {
-                    // 第1QRが見つかっていたら、それを黒塗りしてリーダーから隠す
+                    // 第1QRが見つかっていたら、リーダーに見えないように黒塗りする
                     maskOutBoundingBox(zxingCtx, normalRes.getResultPoints());
                 }
+                
                 window.__applyTwinXor = true;
                 let encryptedRes = null;
                 try { encryptedRes = zxingReader.decodeFromCanvas(zxingCanvas); } catch(e) {}
@@ -263,6 +284,7 @@
             isProcessing = false;
         }
 
+        // 両方読み取れたら結果画面へ
         if (firstQR && secondQR) {
             showResultScreen();
             isScanning = false;
@@ -288,6 +310,7 @@
                 setTimeout(async () => {
                     const pwd = prompt("🔒 第2QRコードが暗号化されています。\nパスワードを入力してください。");
                     if (pwd) {
+                        // 余裕を持たせた4000byteのマスクを一括生成
                         window.twinDecryptMask = await TwinCrypto.deriveMask(pwd, 4000);
                         document.getElementById('box2').classList.add("qr-lock");
                         document.getElementById('text2').innerText = "🔑 復号マスク適用中...";
@@ -296,7 +319,7 @@
                 }, 100);
             }
         } else {
-            firstQR.points = pts;
+            firstQR.points = pts; // 座標だけ更新
         }
     }
 
@@ -304,7 +327,7 @@
         const pts = r.getResultPoints().map(p => ({ x: p.getX ? p.getX() : p.x, y: p.getY ? p.getY() : p.y }));
         const text = r.getText();
 
-        if (firstQR && text === firstQR.text) return; // 誤検知防止
+        if (firstQR && text === firstQR.text) return; // 第1QRの誤検知は除外
 
         if (!secondQR || secondQR.text !== text) {
             secondQR = { text, points: pts, isEncrypted: true };
