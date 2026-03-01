@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>QRツイン リーダー (All-in-One)</title>
+    <title>QRツイン リーダー (Masking Edition)</title>
     <meta name="apple-mobile-web-app-title" content="QRツイン">
     <meta name="theme-color" content="#121212">
 
@@ -42,7 +42,7 @@
     </div>
 
     <div class="status-panel" id="statusPanel">
-        <div id="detectorInfo" style="font-size: 0.8rem; color: #aaa; margin-bottom: 10px;">エンジン: In-Memory Twin Engine</div>
+        <div id="detectorInfo" style="font-size: 0.8rem; color: #aaa; margin-bottom: 10px;">エンジン: ZXing Visual Masking Engine</div>
         <div class="qr-result qr-1" id="box1">
             <strong>第1QR:</strong> <span id="text1">未検出</span>
         </div>
@@ -87,6 +87,7 @@
         },
         getMgmtBits: function(rawBytes, decodedText) {
             try {
+                if (!rawBytes) return null;
                 const textLength = new TextEncoder().encode(decodedText).length;
                 let bitOffset = 0;
                 const readBits = (n) => {
@@ -128,12 +129,10 @@
     window.addEventListener('DOMContentLoaded', async () => {
         const btn = document.getElementById('startBtn');
         try {
-            // 公式ZXingの取得
             const res = await fetch("https://unpkg.com/@zxing/library@0.21.0/umd/index.js");
             if (!res.ok) throw new Error("ネットワークエラー");
             let source = await res.text();
 
-            // コア処理（BitMatrixParser）を正規表現で探し、強制的にXOR処理を注入
             const patchRegex = /(BitMatrixParser\.prototype\.readCodewords\s*=\s*function\s*\([\s\S]*?\{[\s\S]*?)(return\s+result\s*;)/;
             if (!patchRegex.test(source)) throw new Error("パッチ適用箇所が見つかりません");
 
@@ -145,7 +144,6 @@
                 }
             $2`);
 
-            // 改造済みコードをブラウザに読み込ませる
             const script = document.createElement('script');
             script.textContent = source;
             document.head.appendChild(script);
@@ -155,7 +153,7 @@
             btn.onclick = startApp;
         } catch(e) {
             btn.innerText = "⚠️ 読込エラー（画面を再読込してください）";
-            alert("エンジンの構築に失敗しました。インターネット接続を確認してください。\n詳細: " + e.message);
+            alert("エンジンの構築に失敗しました。\n詳細: " + e.message);
         }
     });
 
@@ -169,12 +167,19 @@
     const zxingCtx = zxingCanvas.getContext('2d', { willReadFrequently: true });
 
     let isScanning = false, isProcessing = false, isPromptingPassword = false;
-    let zxingMultiReader = null;
+    let zxingReader = null;
     let firstQR = null, secondQR = null;
 
     async function startApp() {
         document.getElementById('startBtn').disabled = true;
-        zxingMultiReader = new ZXing.qrcode.QRCodeMultiReader();
+        
+        // シングルリーダーを初期化（複数リーダーはJS版に存在しないため）
+        if (ZXing.BrowserQRCodeReader) {
+            zxingReader = new ZXing.BrowserQRCodeReader();
+        } else {
+            zxingReader = new ZXing.BrowserMultiFormatReader();
+        }
+        
         window.twinDecryptMask = null;
         window.__applyTwinXor = false;
 
@@ -194,6 +199,27 @@
         }
     }
 
+    // 視覚的マスキング関数（見つけたQRを黒塗りで隠す）
+    function maskOutBoundingBox(context, points) {
+        if (!points || points.length === 0) return;
+        let minX = Infinity, minY = Infinity, maxX = 0, maxY = 0;
+        points.forEach(p => {
+            const x = p.getX ? p.getX() : p.x;
+            const y = p.getY ? p.getY() : p.y;
+            if (x < minX) minX = x;
+            if (y < minY) minY = y;
+            if (x > maxX) maxX = x;
+            if (y > maxY) maxY = y;
+        });
+        const w = maxX - minX;
+        const h = maxY - minY;
+        // マージンを20%取って確実に黒塗りする
+        const padX = w * 0.2;
+        const padY = h * 0.2;
+        context.fillStyle = '#000000';
+        context.fillRect(minX - padX, minY - padY, w + padX * 2, h + padY * 2);
+    }
+
     async function scanLoop() {
         if (!isScanning) return;
         if (video.videoWidth) {
@@ -207,30 +233,33 @@
 
         if (!isProcessing && video.readyState >= 2 && !isPromptingPassword) {
             isProcessing = true;
-            try {
-                zxingCanvas.width = overlayCanvas.width; zxingCanvas.height = overlayCanvas.height;
-                zxingCtx.drawImage(video, 0, 0, zxingCanvas.width, zxingCanvas.height);
-                
-                const luminanceSource = new ZXing.HTMLCanvasElementLuminanceSource(zxingCanvas);
-                const binaryBitmap = new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(luminanceSource));
-                const hints = new Map(); hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.QR_CODE]);
-                
-                // STEP A: 通常モードでのスキャン（第1QRの発見）
-                window.__applyTwinXor = false;
-                let results = [];
-                try { results = zxingMultiReader.decodeMultiple(binaryBitmap, hints); } catch(e){}
-                await processResults(results, false);
+            
+            // カメラ映像を解析用キャンバスにコピー
+            zxingCanvas.width = overlayCanvas.width;
+            zxingCanvas.height = overlayCanvas.height;
+            zxingCtx.drawImage(video, 0, 0, zxingCanvas.width, zxingCanvas.height);
+            
+            // STEP A: 通常モードでのスキャン（第1QRの発見）
+            window.__applyTwinXor = false;
+            let normalRes = null;
+            try { normalRes = zxingReader.decodeFromCanvas(zxingCanvas); } catch(e){}
+            
+            if (normalRes) await processNormalResult(normalRes);
 
-                // STEP B: 暗号化マスクが準備完了していれば、同じフレームをXOR復号モードで再スキャン（第2QRの発見）
-                if (window.twinDecryptMask) {
-                    window.__applyTwinXor = true;
-                    try {
-                        const encryptedResults = zxingMultiReader.decodeMultiple(binaryBitmap, hints);
-                        await processResults(encryptedResults, true);
-                    } catch(e) {}
-                    window.__applyTwinXor = false;
+            // STEP B: マスクが準備完了していれば、XOR復号モードで再スキャン
+            if (window.twinDecryptMask) {
+                if (normalRes) {
+                    // 第1QRが見つかっていたら、それを黒塗りしてリーダーから隠す
+                    maskOutBoundingBox(zxingCtx, normalRes.getResultPoints());
                 }
-            } catch (err) {}
+                window.__applyTwinXor = true;
+                let encryptedRes = null;
+                try { encryptedRes = zxingReader.decodeFromCanvas(zxingCanvas); } catch(e) {}
+                window.__applyTwinXor = false;
+
+                if (encryptedRes) await processEncryptedResult(encryptedRes);
+            }
+            
             isProcessing = false;
         }
 
@@ -242,46 +271,47 @@
         requestAnimationFrame(scanLoop);
     }
 
-    async function processResults(results, isEncryptedMode) {
-        for (const r of results) {
-            const pts = r.getResultPoints().map(p => ({ x: p.getX(), y: p.getY() }));
-            const text = r.getText();
+    async function processNormalResult(r) {
+        const pts = r.getResultPoints().map(p => ({ x: p.getX ? p.getX() : p.x, y: p.getY ? p.getY() : p.y }));
+        const text = r.getText();
 
-            if (!isEncryptedMode) {
-                if (!firstQR || firstQR.text !== text) {
-                    firstQR = { text, points: pts, isEncrypted: false };
-                    document.getElementById('text1').innerText = text;
-                    
-                    const rawBytes = r.getRawBytes();
-                    const mgmtBits = rawBytes ? TwinCrypto.getMgmtBits(rawBytes, text) : null;
-                    const isAppEncrypted = TwinCrypto.isAppEncrypted(mgmtBits);
+        if (!firstQR || firstQR.text !== text) {
+            firstQR = { text, points: pts, isEncrypted: false };
+            document.getElementById('text1').innerText = text;
+            
+            const rawBytes = typeof r.getRawBytes === 'function' ? r.getRawBytes() : r.rawBytes;
+            const mgmtBits = rawBytes ? TwinCrypto.getMgmtBits(rawBytes, text) : null;
+            const isAppEncrypted = TwinCrypto.isAppEncrypted(mgmtBits);
 
-                    if (isAppEncrypted && !window.twinDecryptMask && !isPromptingPassword) {
-                        isPromptingPassword = true;
-                        setTimeout(async () => {
-                            const pwd = prompt("🔒 第2QRコードが暗号化されています。\nパスワードを入力してください。");
-                            if (pwd) {
-                                // 余裕を持たせた4000byteのマスクを一括生成して適用
-                                window.twinDecryptMask = await TwinCrypto.deriveMask(pwd, 4000);
-                                document.getElementById('box2').classList.add("qr-lock");
-                                document.getElementById('text2').innerText = "🔑 復号マスク適用中...";
-                            }
-                            isPromptingPassword = false;
-                        }, 100);
+            if (isAppEncrypted && !window.twinDecryptMask && !isPromptingPassword) {
+                isPromptingPassword = true;
+                setTimeout(async () => {
+                    const pwd = prompt("🔒 第2QRコードが暗号化されています。\nパスワードを入力してください。");
+                    if (pwd) {
+                        window.twinDecryptMask = await TwinCrypto.deriveMask(pwd, 4000);
+                        document.getElementById('box2').classList.add("qr-lock");
+                        document.getElementById('text2').innerText = "🔑 復号マスク適用中...";
                     }
-                } else {
-                    firstQR.points = pts;
-                }
-            } else {
-                if (firstQR && text === firstQR.text) continue; // 第1QRの誤検知を除外
-                if (!secondQR) {
-                    secondQR = { text, points: pts, isEncrypted: true };
-                    document.getElementById('text2').innerText = text;
-                    document.getElementById('box2').classList.remove("qr-lock");
-                } else {
-                    secondQR.points = pts;
-                }
+                    isPromptingPassword = false;
+                }, 100);
             }
+        } else {
+            firstQR.points = pts;
+        }
+    }
+
+    async function processEncryptedResult(r) {
+        const pts = r.getResultPoints().map(p => ({ x: p.getX ? p.getX() : p.x, y: p.getY ? p.getY() : p.y }));
+        const text = r.getText();
+
+        if (firstQR && text === firstQR.text) return; // 誤検知防止
+
+        if (!secondQR || secondQR.text !== text) {
+            secondQR = { text, points: pts, isEncrypted: true };
+            document.getElementById('text2').innerText = text;
+            document.getElementById('box2').classList.remove("qr-lock");
+        } else {
+            secondQR.points = pts;
         }
     }
 
