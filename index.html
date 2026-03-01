@@ -9,35 +9,132 @@
     <meta name="theme-color" content="#121212">
 
     <script src="https://unpkg.com/@zxing/library@0.21.0/umd/index.min.js"></script>
-    <script src="./zxing-twin-patch.js"></script>
+
+    <script>
+    (function(window) {
+        // ZXingがロードされるまで少し待つ処理は不要（同期ロードされるため）ですが、念のためチェック
+        if (typeof ZXing === 'undefined' || !ZXing.qrcode || !ZXing.qrcode.Decoder) {
+            console.error("ZXing library must be loaded before the patch");
+            return;
+        }
+
+        // --- デコーダーのインターセプト（QR1とQR2の分岐処理） ---
+        const originalDecode = ZXing.qrcode.Decoder.prototype.decode;
+        ZXing.qrcode.Decoder.prototype.decode = function(bits, hints) {
+            try {
+                const result = originalDecode.call(this, bits, hints);
+                result.isTwinEncrypted = false;
+                return result;
+            } catch (error) {
+                if (window.twinDecryptMask) {
+                    window.__applyTwinXor = true;
+                    try {
+                        const result = originalDecode.call(this, bits, hints);
+                        result.isTwinEncrypted = true;
+                        return result;
+                    } catch (err2) {
+                        throw err2;
+                    } finally {
+                        window.__applyTwinXor = false;
+                    }
+                }
+                throw error;
+            }
+        };
+
+        // --- コード語（生データ）抽出時のXORインジェクション ---
+        const originalReadCodewords = ZXing.qrcode.BitMatrixParser.prototype.readCodewords;
+        ZXing.qrcode.BitMatrixParser.prototype.readCodewords = function() {
+            const codewords = originalReadCodewords.call(this);
+            if (window.__applyTwinXor && window.twinDecryptMask) {
+                for (let i = 0; i < codewords.length; i++) {
+                    codewords[i] ^= window.twinDecryptMask[i % window.twinDecryptMask.length];
+                }
+            }
+            return codewords;
+        };
+
+        // --- QRツイン専用の暗号・解析ユーティリティ ---
+        window.TwinCrypto = {
+            sha256Bytes: async function(msgBytes) {
+                const hashBuffer = await crypto.subtle.digest('SHA-256', msgBytes);
+                return new Uint8Array(hashBuffer);
+            },
+            deriveMask: async function(password, neededBytes) {
+                const out = new Uint8Array(neededBytes);
+                let filled = 0;
+                const pwBytes = new TextEncoder().encode(password);
+                let h = await this.sha256Bytes(pwBytes);
+                
+                while (filled < neededBytes) {
+                    const take = Math.min(32, neededBytes - filled);
+                    out.set(h.subarray(0, take), filled);
+                    filled += take;
+                    if (filled >= neededBytes) break;
+                    h = await this.sha256Bytes(h); 
+                }
+                return out;
+            },
+            getMgmtBits: function(rawBytes, decodedText) {
+                try {
+                    const textLength = new TextEncoder().encode(decodedText).length;
+                    let bitOffset = 0;
+                    const readBits = (n) => {
+                        let val = 0;
+                        for(let i=0; i<n; i++) {
+                            const byteIdx = Math.floor(bitOffset / 8);
+                            if(byteIdx >= rawBytes.length) return null;
+                            val = (val << 1) | ((rawBytes[byteIdx] >> (7 - (bitOffset % 8))) & 1);
+                            bitOffset++;
+                        }
+                        return val;
+                    };
+                    
+                    const mode = readBits(4);
+                    if (mode !== 4) return null; // Byteモード以外は除外
+                    
+                    let len = readBits(8);
+                    if (len !== textLength) {
+                        bitOffset = 4;
+                        len = readBits(16);
+                        if (len !== textLength) return null;
+                    }
+                    
+                    bitOffset += len * 8;
+                    const remaining = (rawBytes.length * 8) - bitOffset;
+                    const termLen = Math.min(4, remaining);
+                    readBits(termLen);
+                    
+                    if ((rawBytes.length * 8) - bitOffset >= 16) {
+                        return readBits(16);
+                    }
+                    return null;
+                } catch(e) { return null; }
+            },
+            isAppEncrypted: function(mgmtBits) {
+                if (mgmtBits === null) return false;
+                return ((mgmtBits >> 8) & 1) === 1; 
+            }
+        };
+    })(window);
+    </script>
 
     <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            margin: 0; padding: 0; background-color: #121212; color: #ffffff; text-align: center;
-        }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 0; background-color: #121212; color: #ffffff; text-align: center; }
         h2 { margin: 15px 0; font-size: 1.2rem; }
         #startScreen, #resultScreen { padding: 20px; margin-top: 50px; }
         #resultScreen { display: none; }
-        .camera-container {
-            position: relative; width: 100%; max-width: 600px; margin: 0 auto; background: #000; display: none;
-        }
+        .camera-container { position: relative; width: 100%; max-width: 600px; margin: 0 auto; background: #000; display: none; }
         video { width: 100%; display: block; object-fit: cover; }
         canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
-        .status-panel {
-            padding: 15px; background: #1e1e1e; border-top: 1px solid #333; text-align: left; max-width: 600px; margin: 0 auto; display: none;
-        }
+        .status-panel { padding: 15px; background: #1e1e1e; border-top: 1px solid #333; text-align: left; max-width: 600px; margin: 0 auto; display: none; }
         .qr-result { margin-bottom: 10px; padding: 10px; border-radius: 8px; background: #2c2c2c; word-break: break-all; }
         .qr-1 { border-left: 5px solid #00E676; }
         .qr-2 { border-left: 5px solid #29B6F6; }
         .qr-lock { border-left: 5px solid #ff4d4d; color: #ff9999; }
-        
-        button {
-            width: 100%; max-width: 300px; padding: 15px; font-size: 1.1rem; font-weight: bold; 
-            border: none; border-radius: 8px; cursor: pointer; margin-top: 10px;
-        }
-        #startBtn { background: #81C784; color: #121212; } 
-        #startBtn:active { background: #66BB6A; }
+        button { width: 100%; max-width: 300px; padding: 15px; font-size: 1.1rem; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; margin-top: 10px; }
+        #startBtn { background: #2196F3; color: #ffffff; } 
+        #startBtn:active { background: #1976D2; }
         #backBtn { background: #03DAC6; color: #000; margin-top: 30px; }
     </style>
 </head>
@@ -46,9 +143,7 @@
     <h2>📱 QRツイン リーダー</h2>
     
     <div id="startScreen">
-        <p style="color: #aaa; font-size: 0.9rem; margin-bottom: 20px;">
-            QRツインを読み取ります。（暗号化対応）
-        </p>
+        <p style="color: #aaa; font-size: 0.9rem; margin-bottom: 20px;">QRツインを読み取ります。（暗号化対応）</p>
         <button id="startBtn" onclick="startApp()">📷 カメラを起動する</button>
     </div>
 
@@ -88,7 +183,7 @@
     let isScanning = false;
     let isProcessing = false;
     let zxingMultiReader = null;
-    let isPromptingPassword = false; // パスワード入力の重複防止
+    let isPromptingPassword = false;
 
     let firstQR = null;
     let secondQR = null;
@@ -98,18 +193,21 @@
         startBtn.disabled = true;
         
         if (typeof ZXing === 'undefined' || typeof TwinCrypto === 'undefined') {
-            alert("拡張ライブラリが読み込めていません。zxing-twin-patch.js を配置してください。");
+            alert("ZXingライブラリの読み込みに失敗しました。インターネット接続を確認してください。");
+            startBtn.disabled = false;
             return;
         }
 
         zxingMultiReader = new ZXing.qrcode.QRCodeMultiReader();
-        window.twinDecryptMask = null; // スキャン開始時はマスク初期化
+        window.twinDecryptMask = null;
 
         const success = await startCamera();
         if (success) {
             document.getElementById('startScreen').style.display = 'none';
             document.getElementById('cameraContainer').style.display = 'block';
             document.getElementById('statusPanel').style.display = 'block';
+        } else {
+            startBtn.disabled = false;
         }
     }
 
@@ -136,7 +234,6 @@
         }
         ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
 
-        // 描画
         if (firstQR) drawBoundingBox(firstQR.points, '#00E676');
         if (secondQR) drawBoundingBox(secondQR.points, secondQR.isEncrypted ? '#ff4d4d' : '#29B6F6');
 
@@ -153,7 +250,6 @@
                 const hints = new Map();
                 hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.QR_CODE]);
                 
-                // パッチ適用済みのMultiReaderによるデコード
                 const results = zxingMultiReader.decodeMultiple(binaryBitmap, hints);
                 await processResults(results);
 
@@ -176,27 +272,20 @@
             const text = r.getText();
             const isEnc = r.isTwinEncrypted;
 
-            // ① QR1の処理（暗号化されていない方）
             if (!isEnc) {
                 if (!firstQR || firstQR.text !== text) {
                     firstQR = { text, points: pts, isEncrypted: false };
                     document.getElementById('text1').innerText = text;
                     
-                    // ② 管理部の抽出と判定
                     const rawBytes = r.getRawBytes();
                     const mgmtBits = TwinCrypto.getMgmtBits(rawBytes, text);
                     const isAppEncrypted = TwinCrypto.isAppEncrypted(mgmtBits);
 
-                    // ③ パスワード要求と ④ マスク生成
                     if (isAppEncrypted && !window.twinDecryptMask && !isPromptingPassword) {
                         isPromptingPassword = true;
-                        
-                        // ※UIを見やすくするため少し遅延させてプロンプト表示
                         setTimeout(async () => {
                             const pwd = prompt("第2QRコードが暗号化されています。\nパスワードを入力してください。");
                             if (pwd) {
-                                // QRコードの総コード語長に合わせてマスクを生成
-                                // rawBytes.length はデータ部+パディング+ECCの総バイト数と一致します
                                 window.twinDecryptMask = await TwinCrypto.deriveMask(pwd, rawBytes.length);
                                 document.getElementById('box2').classList.add("qr-lock");
                                 document.getElementById('text2').innerText = "🔑 復号マスク適用中...";
@@ -205,10 +294,9 @@
                         }, 100);
                     }
                 } else {
-                    firstQR.points = pts; // 座標更新
+                    firstQR.points = pts;
                 }
             } 
-            // ⑤ QR2の処理（復号された方）
             else {
                 if (!secondQR) {
                     secondQR = { text, points: pts, isEncrypted: true };
