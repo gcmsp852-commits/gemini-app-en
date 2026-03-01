@@ -3,29 +3,56 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>QRツイン リーダー (Masking Edition)</title>
+    <title>QRツイン リーダー</title>
     <meta name="apple-mobile-web-app-title" content="QRツイン">
+    <meta name="application-name" content="QRツイン">
+
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="theme-color" content="#121212">
 
+    <link rel="apple-touch-icon" sizes="180x180" href="icon.png">
+    <link rel="icon" type="image/png" sizes="512x512" href="icon.png">
+    <link rel="manifest" href="manifest.json">
+    
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 0; background-color: #121212; color: #ffffff; text-align: center; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            margin: 0; padding: 0; background-color: #121212; color: #ffffff; text-align: center;
+        }
         h2 { margin: 15px 0; font-size: 1.2rem; }
+        
         #startScreen, #resultScreen { padding: 20px; margin-top: 50px; }
         #resultScreen { display: none; }
-        .camera-container { position: relative; width: 100%; max-width: 600px; margin: 0 auto; background: #000; display: none; }
+
+        .camera-container {
+            position: relative; width: 100%; max-width: 600px; margin: 0 auto; background: #000; display: none;
+        }
         video { width: 100%; display: block; object-fit: cover; }
         canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
-        .status-panel { padding: 15px; background: #1e1e1e; border-top: 1px solid #333; text-align: left; max-width: 600px; margin: 0 auto; display: none; }
+        
+        .status-panel {
+            padding: 15px; background: #1e1e1e; border-top: 1px solid #333; text-align: left; max-width: 600px; margin: 0 auto; display: none;
+        }
+        
         .qr-result { margin-bottom: 10px; padding: 10px; border-radius: 8px; background: #2c2c2c; word-break: break-all; }
         .qr-1 { border-left: 5px solid #00E676; }
         .qr-2 { border-left: 5px solid #29B6F6; }
-        .qr-lock { border-left: 5px solid #ff4d4d; color: #ff9999; }
-        button { width: 100%; max-width: 300px; padding: 15px; font-size: 1.1rem; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; margin-top: 10px; }
-        #startBtn { background: #81C784; color: #121212; transition: 0.3s; } 
+        
+        button {
+            width: 100%; max-width: 300px; padding: 15px; font-size: 1.1rem; font-weight: bold; 
+            background: #6200EE; color: white; border: none; border-radius: 8px; cursor: pointer; margin-top: 10px;
+        }
+        button:disabled { background: #555; cursor: not-allowed; color: #aaa; }
+        
+        /* ▼▼▼ お客様の変更点：起動ボタンを薄緑色に指定、文字色を見やすく調整 ▼▼▼ */
+        #startBtn { background: #81C784; color: #121212; } 
         #startBtn:active { background: #66BB6A; }
-        #startBtn:disabled { background: #555; color: #aaa; cursor: not-allowed; }
+        
         #backBtn { background: #03DAC6; color: #000; margin-top: 30px; }
-        #errorLog { color: #ff4d4d; font-size: 0.8rem; margin-top: 10px; word-break: break-all; }
+        #backBtn:active { background: #018786; }
     </style>
 </head>
 <body>
@@ -33,9 +60,11 @@
     <h2>📱 QRツイン リーダー</h2>
     
     <div id="startScreen">
-        <p style="color: #aaa; font-size: 0.9rem; margin-bottom: 20px;">QRツインを読み取ります。（暗号化完全対応）</p>
-        <button id="startBtn" disabled>🚀 読取エンジンを構築中...</button>
-        <div id="errorLog"></div>
+        <p style="color: #aaa; font-size: 0.9rem; margin-bottom: 20px;">
+            2つのQRコードを同時に、または連続して読み取ります。<br>
+            <span style="font-size: 0.75rem; color: #888;">(QRツイン暗号化・管理部解析対応)</span>
+        </p>
+        <button id="startBtn" onclick="startApp()">📷 カメラを起動する</button>
     </div>
 
     <div class="camera-container" id="cameraContainer">
@@ -44,22 +73,22 @@
     </div>
 
     <div class="status-panel" id="statusPanel">
-        <div id="detectorInfo" style="font-size: 0.8rem; color: #aaa; margin-bottom: 10px;">エンジン: ZXing Visual Masking Engine</div>
-        <div class="qr-result qr-1" id="box1">
-            <strong>第1QR:</strong> <span id="text1">未検出</span>
+        <div id="detectorInfo" style="font-size: 0.8rem; color: #aaa; margin-bottom: 10px;">読取エンジン準備中...</div>
+        <div class="qr-result qr-1">
+            <strong>1個目:</strong> <span id="text1">未検出</span>
         </div>
-        <div class="qr-result qr-2" id="box2">
-            <strong>第2QR:</strong> <span id="text2">未検出</span>
+        <div class="qr-result qr-2">
+            <strong>2個目:</strong> <span id="text2">未検出</span>
         </div>
     </div>
 
     <div id="resultScreen">
         <h3 style="color: #00E676; margin-bottom: 20px;">✅ 読み取り完了！</h3>
         <div class="qr-result qr-1" style="text-align: left;">
-            <strong>第1QR:</strong><br> <span id="finalText1"></span>
+            <strong>1個目:</strong><br> <span id="finalText1"></span>
         </div>
         <div class="qr-result qr-2" style="text-align: left;">
-            <strong>第2QR (復号済):</strong><br> <span id="finalText2"></span>
+            <strong>2個目:</strong><br> <span id="finalText2"></span>
         </div>
         <button id="backBtn" onclick="goBack()">🔙 もとのカメラ画面に戻る</button>
     </div>
@@ -121,105 +150,149 @@
         },
         isAppEncrypted: function(mgmtBits) {
             if (mgmtBits === null) return false;
-            // 管理部の左から8番目(あるいは必要なビット)の判定。必要に応じてシフト数を調整してください。
             return ((mgmtBits >> 8) & 1) === 1; 
         }
     };
 
     // ==========================================
-    // 2. エンジンの自動ダウンロード＆超強力魔改造パッチ
+    // 2. メイン処理・UI制御
     // ==========================================
-    window.addEventListener('DOMContentLoaded', async () => {
-        const btn = document.getElementById('startBtn');
-        const errorLog = document.getElementById('errorLog');
+    const video = document.getElementById('video');
+    const overlayCanvas = document.getElementById('overlayCanvas');
+    const ctx = overlayCanvas.getContext('2d');
+    
+    const zxingCanvas = document.createElement('canvas');
+    const zxingCtx = zxingCanvas.getContext('2d', { willReadFrequently: true });
+
+    let isProcessing = false;
+    let isScanning = false;
+    let isPromptingPassword = false;
+    let lastDetectTime = 0;
+    const SCAN_INTERVAL_MS = 200; 
+    
+    let zxingReader = null;
+    let firstQR = null;
+    let secondQR = null;
+
+    async function startApp() {
+        const startBtn = document.getElementById('startBtn');
+        startBtn.disabled = true;
+        startBtn.innerText = "エンジン構築中...";
+
+        try {
+            await initEngines();
+        } catch (e) {
+            startBtn.disabled = false;
+            startBtn.innerText = "📷 カメラを起動する";
+            return;
+        }
+
+        startBtn.innerText = "カメラ準備中...";
+        const success = await startCamera();
+        
+        if (success) {
+            document.getElementById('startScreen').style.display = 'none';
+            document.getElementById('cameraContainer').style.display = 'block';
+            document.getElementById('statusPanel').style.display = 'block';
+        } else {
+            startBtn.disabled = false;
+            startBtn.innerText = "📷 カメラを起動する";
+        }
+    }
+
+    // 波括弧カウント方式で絶対に失敗しない魔改造エンジンジェネレーター
+    async function initEngines() {
         try {
             const res = await fetch("https://unpkg.com/@zxing/library@0.21.0/umd/index.js");
             if (!res.ok) throw new Error("ネットワークエラー: " + res.status);
             let source = await res.text();
 
-            // 改行や変数名、圧縮の有無に影響されない超強力な正規表現
-            // 仕組み: クラス名.prototype.readCodewords = function() { ... return [変数名]; } を探し出し、returnの直前にXOR処理を注入する
-            const patchRegex = /([a-zA-Z0-9_$]+)\.prototype\.readCodewords\s*=\s*function\s*\([^)]*\)\s*\{([\s\S]*?)return\s+([a-zA-Z0-9_$]+);?\s*\}/g;
             let isPatched = false;
+            let startIdx = source.indexOf(".prototype.readCodewords = function");
+            if (startIdx === -1) startIdx = source.indexOf(".prototype.readCodewords=function");
+            
+            if (startIdx !== -1) {
+                let openBraceIdx = source.indexOf("{", startIdx);
+                let braceCount = 1;
+                let i = openBraceIdx + 1;
+                // 波括弧の数を数えて関数ブロックの終わりを特定
+                while (braceCount > 0 && i < source.length) {
+                    if (source[i] === "{") braceCount++;
+                    else if (source[i] === "}") braceCount--;
+                    i++;
+                }
+                let closeBraceIdx = i - 1;
+                let funcBody = source.substring(openBraceIdx + 1, closeBraceIdx);
+                
+                // ブロックの最後にある return 文を探す
+                let lastReturnIdx = funcBody.lastIndexOf("return");
+                if (lastReturnIdx !== -1) {
+                    let beforeReturn = funcBody.substring(0, lastReturnIdx);
+                    let returnStmt = funcBody.substring(lastReturnIdx);
+                    
+                    let returnMatch = returnStmt.match(/return\s+([a-zA-Z0-9_$]+)/);
+                    if (returnMatch) {
+                        let varName = returnMatch[1];
+                        let injected = `
+                            if (typeof window !== 'undefined' && window.__applyTwinXor && window.twinDecryptMask) {
+                                for (var _i = 0; _i < ${varName}.length; _i++) {
+                                    ${varName}[_i] ^= window.twinDecryptMask[_i % window.twinDecryptMask.length];
+                                }
+                            }
+                        `;
+                        let newFuncBody = beforeReturn + injected + returnStmt;
+                        source = source.substring(0, openBraceIdx + 1) + newFuncBody + source.substring(closeBraceIdx);
+                        isPatched = true;
+                    }
+                }
+            }
+            
+            if (!isPatched) {
+                throw new Error("バッチ適用箇所が見つかりません。ライブラリの構造が想定と異なります。");
+            }
 
-            source = source.replace(patchRegex, function(match, className, body, returnVar) {
-                isPatched = true;
-                return className + ".prototype.readCodewords = function() {" + body + 
-                    "if (typeof window !== 'undefined' && window.__applyTwinXor && window.twinDecryptMask) {" +
-                    "  for (var _i = 0; _i < " + returnVar + ".length; _i++) {" +
-                    "    " + returnVar + "[_i] ^= window.twinDecryptMask[_i % window.twinDecryptMask.length];" +
-                    "  }" +
-                    "}" +
-                    "return " + returnVar + "; }";
-            });
-
-            if (!isPatched) throw new Error("パッチ適用箇所が見つかりません。ライブラリの構造が想定と異なります。");
-
-            // 改造済みコードをブラウザのメモリ上に展開
+            // メモリ上に改造済みのライブラリを展開
             const script = document.createElement('script');
             script.textContent = source;
             document.head.appendChild(script);
 
-            // ロードが完了したらボタンを有効化
-            setTimeout(() => {
-                if (typeof ZXing !== 'undefined') {
-                    btn.innerText = "📷 カメラを起動する";
-                    btn.disabled = false;
-                    btn.onclick = startApp;
-                } else {
-                    throw new Error("ZXingの初期化に失敗しました。");
-                }
-            }, 500);
+            await new Promise(r => setTimeout(r, 150));
 
-        } catch(e) {
-            btn.innerText = "⚠️ 読込エラー（画面を再読込してください）";
-            errorLog.innerText = "詳細: " + e.message;
-        }
-    });
-
-    // ==========================================
-    // 3. メインアプリケーションのロジック（マスキング方式）
-    // ==========================================
-    const video = document.getElementById('video');
-    const overlayCanvas = document.getElementById('overlayCanvas');
-    const ctx = overlayCanvas.getContext('2d');
-    const zxingCanvas = document.createElement('canvas');
-    const zxingCtx = zxingCanvas.getContext('2d', { willReadFrequently: true });
-
-    let isScanning = false, isProcessing = false, isPromptingPassword = false;
-    let zxingReader = null;
-    let firstQR = null, secondQR = null;
-
-    async function startApp() {
-        document.getElementById('startBtn').disabled = true;
-        
-        // シングルリーダーを初期化
-        if (ZXing.BrowserQRCodeReader) {
-            zxingReader = new ZXing.BrowserQRCodeReader();
-        } else {
-            zxingReader = new ZXing.BrowserMultiFormatReader();
-        }
-        
-        window.twinDecryptMask = null;
-        window.__applyTwinXor = false;
-
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
-            video.srcObject = stream;
-            await new Promise(r => { video.onloadedmetadata = r; setTimeout(r, 1000); });
-            await video.play();
-            isScanning = true;
-            document.getElementById('startScreen').style.display = 'none';
-            document.getElementById('cameraContainer').style.display = 'block';
-            document.getElementById('statusPanel').style.display = 'block';
-            requestAnimationFrame(scanLoop);
-        } catch (err) {
-            alert("カメラエラー: " + err.message);
-            document.getElementById('startBtn').disabled = false;
+            if (typeof ZXing !== 'undefined') {
+                zxingReader = new ZXing.BrowserQRCodeReader();
+                document.getElementById('detectorInfo').innerText = "⚡ エンジン: ZXing Custom (管理部解析・XOR復号対応)";
+            } else {
+                throw new Error("ZXingの初期化に失敗しました。");
+            }
+        } catch (e) {
+            alert("ZXingエンジンの構築に失敗しました。\n詳細: " + e.message);
+            throw e;
         }
     }
 
-    // 第1QRを黒塗りで隠して、第2QRを読ませるためのマスキング関数
+    async function startCamera() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+            video.srcObject = stream;
+            
+            await new Promise((resolve) => {
+                video.onloadedmetadata = resolve;
+                setTimeout(resolve, 1000); 
+            });
+            
+            await video.play().catch(e => console.warn("自動再生ブロック:", e));
+            
+            isScanning = true;
+            window.twinDecryptMask = null;
+            window.__applyTwinXor = false;
+            requestAnimationFrame(scanLoop);
+            return true;
+        } catch (err) {
+            alert("カメラを起動できませんでした。\nエラー: " + err.message);
+            return false;
+        }
+    }
+
     function maskOutBoundingBox(context, points) {
         if (!points || points.length === 0) return;
         let minX = Infinity, minY = Infinity, maxX = 0, maxY = 0;
@@ -233,7 +306,7 @@
         });
         const w = maxX - minX;
         const h = maxY - minY;
-        const padX = w * 0.2; // 少し広めに黒塗りする
+        const padX = w * 0.2;
         const padY = h * 0.2;
         context.fillStyle = '#000000';
         context.fillRect(minX - padX, minY - padY, w + padX * 2, h + padY * 2);
@@ -241,38 +314,39 @@
 
     async function scanLoop() {
         if (!isScanning) return;
-        if (video.videoWidth) {
+
+        if (video.videoWidth && overlayCanvas.width !== video.videoWidth) {
             overlayCanvas.width = video.videoWidth;
             overlayCanvas.height = video.videoHeight;
         }
+
         ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
 
-        // 画面上のガイド枠描画
         if (firstQR) drawBoundingBox(firstQR.points, '#00E676');
-        if (secondQR) drawBoundingBox(secondQR.points, secondQR.isEncrypted ? '#ff4d4d' : '#29B6F6');
+        if (secondQR) drawBoundingBox(secondQR.points, '#29B6F6');
 
-        if (!isProcessing && video.readyState >= 2 && !isPromptingPassword) {
+        const now = Date.now();
+        if (!isProcessing && now - lastDetectTime > SCAN_INTERVAL_MS && video.readyState >= 2 && !isPromptingPassword) {
             isProcessing = true;
+            lastDetectTime = now;
             
-            // カメラ映像を解析用キャンバスにコピー
             zxingCanvas.width = overlayCanvas.width;
             zxingCanvas.height = overlayCanvas.height;
             zxingCtx.drawImage(video, 0, 0, zxingCanvas.width, zxingCanvas.height);
-            
-            // STEP A: 通常モードでのスキャン（第1QRの発見）
+
+            // 1. 第1QRの探索 (通常モード)
             window.__applyTwinXor = false;
             let normalRes = null;
             try { normalRes = zxingReader.decodeFromCanvas(zxingCanvas); } catch(e){}
-            
+
             if (normalRes) await processNormalResult(normalRes);
 
-            // STEP B: パスワード入力後、マスクが準備完了していればXOR復号モードで再スキャン
+            // 2. 第2QRの探索 (マスク適用 ＆ XOR復号モード)
             if (window.twinDecryptMask) {
-                if (normalRes) {
-                    // 第1QRが見つかっていたら、リーダーに見えないように黒塗りする
-                    maskOutBoundingBox(zxingCtx, normalRes.getResultPoints());
+                if (firstQR) {
+                    // 第1QRが見つかっている場合は黒塗りして隠す（第2QRだけを見つけるため）
+                    maskOutBoundingBox(zxingCtx, firstQR.points);
                 }
-                
                 window.__applyTwinXor = true;
                 let encryptedRes = null;
                 try { encryptedRes = zxingReader.decodeFromCanvas(zxingCanvas); } catch(e) {}
@@ -280,29 +354,30 @@
 
                 if (encryptedRes) await processEncryptedResult(encryptedRes);
             }
-            
+
             isProcessing = false;
         }
 
-        // 両方読み取れたら結果画面へ
         if (firstQR && secondQR) {
             showResultScreen();
             isScanning = false;
             return;
         }
+
         requestAnimationFrame(scanLoop);
     }
 
     async function processNormalResult(r) {
-        const pts = r.getResultPoints().map(p => ({ x: p.getX ? p.getX() : p.x, y: p.getY ? p.getY() : p.y }));
+        const pts = r.getResultPoints().map(p => ({ x: p.getX(), y: p.getY() }));
         const text = r.getText();
 
         if (!firstQR || firstQR.text !== text) {
-            firstQR = { text, points: pts, isEncrypted: false };
+            firstQR = { text, points: pts };
             document.getElementById('text1').innerText = text;
-            
+
+            // ネイティブには存在しない「生データ（rawBytes）」を抽出
             const rawBytes = typeof r.getRawBytes === 'function' ? r.getRawBytes() : r.rawBytes;
-            const mgmtBits = rawBytes ? TwinCrypto.getMgmtBits(rawBytes, text) : null;
+            const mgmtBits = TwinCrypto.getMgmtBits(rawBytes, text);
             const isAppEncrypted = TwinCrypto.isAppEncrypted(mgmtBits);
 
             if (isAppEncrypted && !window.twinDecryptMask && !isPromptingPassword) {
@@ -310,37 +385,42 @@
                 setTimeout(async () => {
                     const pwd = prompt("🔒 第2QRコードが暗号化されています。\nパスワードを入力してください。");
                     if (pwd) {
-                        // 余裕を持たせた4000byteのマスクを一括生成
                         window.twinDecryptMask = await TwinCrypto.deriveMask(pwd, 4000);
-                        document.getElementById('box2').classList.add("qr-lock");
                         document.getElementById('text2').innerText = "🔑 復号マスク適用中...";
+                    } else {
+                        // キャンセル時はリセット
+                        firstQR = null;
+                        document.getElementById('text1').innerText = "未検出";
                     }
                     isPromptingPassword = false;
                 }, 100);
             }
         } else {
-            firstQR.points = pts; // 座標だけ更新
+            firstQR.points = pts;
         }
     }
 
     async function processEncryptedResult(r) {
-        const pts = r.getResultPoints().map(p => ({ x: p.getX ? p.getX() : p.x, y: p.getY ? p.getY() : p.y }));
+        const pts = r.getResultPoints().map(p => ({ x: p.getX(), y: p.getY() }));
         const text = r.getText();
 
-        if (firstQR && text === firstQR.text) return; // 第1QRの誤検知は除外
+        if (firstQR && text === firstQR.text) return; // 誤検知除外
 
         if (!secondQR || secondQR.text !== text) {
-            secondQR = { text, points: pts, isEncrypted: true };
+            secondQR = { text, points: pts };
             document.getElementById('text2').innerText = text;
-            document.getElementById('box2').classList.remove("qr-lock");
         } else {
             secondQR.points = pts;
         }
     }
 
     function formatResultText(text) {
-        if (/^https?:\/\//i.test(text)) return `<a href="${text}" target="_blank" style="color: #03DAC6;">${text}</a>`;
-        const div = document.createElement('div'); div.innerText = text; return div.innerHTML;
+        if (/^https?:\/\//i.test(text)) {
+            return `<a href="${text}" target="_blank" rel="noopener noreferrer" style="color: #03DAC6; text-decoration: underline; font-weight: bold;">${text}</a>`;
+        }
+        const div = document.createElement('div');
+        div.innerText = text;
+        return div.innerHTML;
     }
 
     function showResultScreen() {
@@ -348,26 +428,35 @@
         document.getElementById('cameraContainer').style.display = 'none';
         document.getElementById('statusPanel').style.display = 'none';
         document.getElementById('resultScreen').style.display = 'block';
+        
         document.getElementById('finalText1').innerHTML = formatResultText(firstQR.text);
         document.getElementById('finalText2').innerHTML = formatResultText(secondQR.text);
     }
 
     function goBack() {
         firstQR = null; secondQR = null;
-        window.twinDecryptMask = null; window.__applyTwinXor = false;
-        document.getElementById('text1').innerText = "未検出"; document.getElementById('text2').innerText = "未検出";
-        document.getElementById('box2').classList.remove("qr-lock");
+        window.twinDecryptMask = null;
+        window.__applyTwinXor = false;
+        
+        document.getElementById('text1').innerText = "未検出";
+        document.getElementById('text2').innerText = "未検出";
+        
         document.getElementById('resultScreen').style.display = 'none';
         document.getElementById('cameraContainer').style.display = 'block';
         document.getElementById('statusPanel').style.display = 'block';
-        isScanning = true; requestAnimationFrame(scanLoop);
+        
+        ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+        isScanning = true;
+        requestAnimationFrame(scanLoop);
     }
 
     function drawBoundingBox(points, color) {
         if (!points || points.length < 3) return;
-        ctx.beginPath(); ctx.moveTo(points[0].x, points[0].y);
+        ctx.beginPath();
+        ctx.moveTo(points[0].x, points[0].y);
         for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
-        ctx.closePath(); ctx.lineWidth = 4; ctx.strokeStyle = color; ctx.stroke();
+        ctx.closePath();
+        ctx.lineWidth = 6; ctx.strokeStyle = color; ctx.stroke();
         ctx.fillStyle = color + '44'; ctx.fill();
     }
 </script>
