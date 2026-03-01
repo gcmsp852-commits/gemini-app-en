@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>QRツイン リーダー (Crypto Edition)</title>
+    <meta name="apple-mobile-web-app-title" content="QRツイン">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="theme-color" content="#121212">
+
+    <script src="https://unpkg.com/@zxing/library@0.21.0/umd/index.min.js"></script>
+    <script src="./zxing-twin-patch.js"></script>
+
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            margin: 0; padding: 0; background-color: #121212; color: #ffffff; text-align: center;
+        }
+        h2 { margin: 15px 0; font-size: 1.2rem; }
+        #startScreen, #resultScreen { padding: 20px; margin-top: 50px; }
+        #resultScreen { display: none; }
+        .camera-container {
+            position: relative; width: 100%; max-width: 600px; margin: 0 auto; background: #000; display: none;
+        }
+        video { width: 100%; display: block; object-fit: cover; }
+        canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+        .status-panel {
+            padding: 15px; background: #1e1e1e; border-top: 1px solid #333; text-align: left; max-width: 600px; margin: 0 auto; display: none;
+        }
+        .qr-result { margin-bottom: 10px; padding: 10px; border-radius: 8px; background: #2c2c2c; word-break: break-all; }
+        .qr-1 { border-left: 5px solid #00E676; }
+        .qr-2 { border-left: 5px solid #29B6F6; }
+        .qr-lock { border-left: 5px solid #ff4d4d; color: #ff9999; }
+        
+        button {
+            width: 100%; max-width: 300px; padding: 15px; font-size: 1.1rem; font-weight: bold; 
+            border: none; border-radius: 8px; cursor: pointer; margin-top: 10px;
+        }
+        #startBtn { background: #81C784; color: #121212; } 
+        #startBtn:active { background: #66BB6A; }
+        #backBtn { background: #03DAC6; color: #000; margin-top: 30px; }
+    </style>
+</head>
+<body>
+
+    <h2>📱 QRツイン リーダー</h2>
+    
+    <div id="startScreen">
+        <p style="color: #aaa; font-size: 0.9rem; margin-bottom: 20px;">
+            QRツインを読み取ります。（暗号化対応）
+        </p>
+        <button id="startBtn" onclick="startApp()">📷 カメラを起動する</button>
+    </div>
+
+    <div class="camera-container" id="cameraContainer">
+        <video id="video" playsinline autoplay muted></video>
+        <canvas id="overlayCanvas"></canvas>
+    </div>
+
+    <div class="status-panel" id="statusPanel">
+        <div id="detectorInfo" style="font-size: 0.8rem; color: #aaa; margin-bottom: 10px;">読取エンジン: ZXing Custom Twin Engine</div>
+        <div class="qr-result qr-1" id="box1">
+            <strong>第1QR:</strong> <span id="text1">未検出</span>
+        </div>
+        <div class="qr-result qr-2" id="box2">
+            <strong>第2QR:</strong> <span id="text2">未検出</span>
+        </div>
+    </div>
+
+    <div id="resultScreen">
+        <h3 style="color: #00E676; margin-bottom: 20px;">✅ 読み取り完了！</h3>
+        <div class="qr-result qr-1" style="text-align: left;">
+            <strong>第1QR:</strong><br> <span id="finalText1"></span>
+        </div>
+        <div class="qr-result qr-2" style="text-align: left;">
+            <strong>第2QR (復号済):</strong><br> <span id="finalText2"></span>
+        </div>
+        <button id="backBtn" onclick="goBack()">🔙 もとのカメラ画面に戻る</button>
+    </div>
+
+<script>
+    const video = document.getElementById('video');
+    const overlayCanvas = document.getElementById('overlayCanvas');
+    const ctx = overlayCanvas.getContext('2d');
+    const zxingCanvas = document.createElement('canvas');
+    const zxingCtx = zxingCanvas.getContext('2d', { willReadFrequently: true });
+
+    let isScanning = false;
+    let isProcessing = false;
+    let zxingMultiReader = null;
+    let isPromptingPassword = false; // パスワード入力の重複防止
+
+    let firstQR = null;
+    let secondQR = null;
+
+    async function startApp() {
+        const startBtn = document.getElementById('startBtn');
+        startBtn.disabled = true;
+        
+        if (typeof ZXing === 'undefined' || typeof TwinCrypto === 'undefined') {
+            alert("拡張ライブラリが読み込めていません。zxing-twin-patch.js を配置してください。");
+            return;
+        }
+
+        zxingMultiReader = new ZXing.qrcode.QRCodeMultiReader();
+        window.twinDecryptMask = null; // スキャン開始時はマスク初期化
+
+        const success = await startCamera();
+        if (success) {
+            document.getElementById('startScreen').style.display = 'none';
+            document.getElementById('cameraContainer').style.display = 'block';
+            document.getElementById('statusPanel').style.display = 'block';
+        }
+    }
+
+    async function startCamera() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+            video.srcObject = stream;
+            await new Promise(resolve => { video.onloadedmetadata = resolve; setTimeout(resolve, 1000); });
+            await video.play();
+            isScanning = true;
+            requestAnimationFrame(scanLoop);
+            return true;
+        } catch (err) {
+            alert("カメラエラー: " + err.message);
+            return false;
+        }
+    }
+
+    async function scanLoop() {
+        if (!isScanning) return;
+        if (video.videoWidth) {
+            overlayCanvas.width = video.videoWidth;
+            overlayCanvas.height = video.videoHeight;
+        }
+        ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+
+        // 描画
+        if (firstQR) drawBoundingBox(firstQR.points, '#00E676');
+        if (secondQR) drawBoundingBox(secondQR.points, secondQR.isEncrypted ? '#ff4d4d' : '#29B6F6');
+
+        if (!isProcessing && video.readyState >= 2 && !isPromptingPassword) {
+            isProcessing = true;
+            
+            try {
+                zxingCanvas.width = overlayCanvas.width;
+                zxingCanvas.height = overlayCanvas.height;
+                zxingCtx.drawImage(video, 0, 0, zxingCanvas.width, zxingCanvas.height);
+                
+                const luminanceSource = new ZXing.HTMLCanvasElementLuminanceSource(zxingCanvas);
+                const binaryBitmap = new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(luminanceSource));
+                const hints = new Map();
+                hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.QR_CODE]);
+                
+                // パッチ適用済みのMultiReaderによるデコード
+                const results = zxingMultiReader.decodeMultiple(binaryBitmap, hints);
+                await processResults(results);
+
+            } catch (err) { /* ZXing NotFoundException etc. */ }
+            isProcessing = false;
+        }
+
+        if (firstQR && secondQR) {
+            showResultScreen();
+            isScanning = false;
+            return;
+        }
+
+        requestAnimationFrame(scanLoop);
+    }
+
+    async function processResults(results) {
+        for (const r of results) {
+            const pts = r.getResultPoints().map(p => ({ x: p.getX(), y: p.getY() }));
+            const text = r.getText();
+            const isEnc = r.isTwinEncrypted;
+
+            // ① QR1の処理（暗号化されていない方）
+            if (!isEnc) {
+                if (!firstQR || firstQR.text !== text) {
+                    firstQR = { text, points: pts, isEncrypted: false };
+                    document.getElementById('text1').innerText = text;
+                    
+                    // ② 管理部の抽出と判定
+                    const rawBytes = r.getRawBytes();
+                    const mgmtBits = TwinCrypto.getMgmtBits(rawBytes, text);
+                    const isAppEncrypted = TwinCrypto.isAppEncrypted(mgmtBits);
+
+                    // ③ パスワード要求と ④ マスク生成
+                    if (isAppEncrypted && !window.twinDecryptMask && !isPromptingPassword) {
+                        isPromptingPassword = true;
+                        
+                        // ※UIを見やすくするため少し遅延させてプロンプト表示
+                        setTimeout(async () => {
+                            const pwd = prompt("第2QRコードが暗号化されています。\nパスワードを入力してください。");
+                            if (pwd) {
+                                // QRコードの総コード語長に合わせてマスクを生成
+                                // rawBytes.length はデータ部+パディング+ECCの総バイト数と一致します
+                                window.twinDecryptMask = await TwinCrypto.deriveMask(pwd, rawBytes.length);
+                                document.getElementById('box2').classList.add("qr-lock");
+                                document.getElementById('text2').innerText = "🔑 復号マスク適用中...";
+                            }
+                            isPromptingPassword = false;
+                        }, 100);
+                    }
+                } else {
+                    firstQR.points = pts; // 座標更新
+                }
+            } 
+            // ⑤ QR2の処理（復号された方）
+            else {
+                if (!secondQR) {
+                    secondQR = { text, points: pts, isEncrypted: true };
+                    document.getElementById('text2').innerText = text;
+                    document.getElementById('box2').classList.remove("qr-lock");
+                } else {
+                    secondQR.points = pts;
+                }
+            }
+        }
+    }
+
+    function formatResultText(text) {
+        if (/^https?:\/\//i.test(text)) {
+            return `<a href="${text}" target="_blank" style="color: #03DAC6;">${text}</a>`;
+        }
+        const div = document.createElement('div');
+        div.innerText = text;
+        return div.innerHTML;
+    }
+
+    function showResultScreen() {
+        if (navigator.vibrate) navigator.vibrate([40, 30, 40]); 
+        document.getElementById('cameraContainer').style.display = 'none';
+        document.getElementById('statusPanel').style.display = 'none';
+        document.getElementById('resultScreen').style.display = 'block';
+        
+        document.getElementById('finalText1').innerHTML = formatResultText(firstQR.text);
+        document.getElementById('finalText2').innerHTML = formatResultText(secondQR.text);
+    }
+
+    function goBack() {
+        firstQR = null; secondQR = null;
+        window.twinDecryptMask = null;
+        document.getElementById('text1').innerText = "未検出";
+        document.getElementById('text2').innerText = "未検出";
+        document.getElementById('box2').classList.remove("qr-lock");
+        
+        document.getElementById('resultScreen').style.display = 'none';
+        document.getElementById('cameraContainer').style.display = 'block';
+        document.getElementById('statusPanel').style.display = 'block';
+        
+        isScanning = true;
+        requestAnimationFrame(scanLoop);
+    }
+
+    function drawBoundingBox(points, color) {
+        if (!points || points.length < 3) return;
+        ctx.beginPath(); ctx.moveTo(points[0].x, points[0].y);
+        for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
+        ctx.closePath();
+        ctx.lineWidth = 4; ctx.strokeStyle = color; ctx.stroke();
+        ctx.fillStyle = color + '44'; ctx.fill();
+    }
+</script>
+</body>
+</html>
